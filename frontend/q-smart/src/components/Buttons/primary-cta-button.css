@@ -1,0 +1,20 @@
+
+
+
+.primarybutton {
+    font-family: var(--primary-font-family);
+    font-size: 27px;
+    background-color: var(--primary-button-color);
+    text-decoration: none;
+    border-style: none;
+    cursor: pointer;
+    border-radius: 30px;
+    height: var(--primary-button-height);
+    width:var(--primary-button-width);
+    color: #000000;
+  }
+  
+  .primarybutton:hover{
+      background-color: #e7f0e8;
+    
+  }
