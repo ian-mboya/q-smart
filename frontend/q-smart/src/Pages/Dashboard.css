@@ -1,0 +1,13 @@
+.dash{padding:24px;max-width:1000px;margin:0 auto}
+.section{border:1px solid #e5e7eb;border-radius:8px;padding:16px;margin-bottom:16px}
+.row{display:flex;gap:8px;align-items:center}
+.input{padding:8px;border:1px solid #d1d5db;border-radius:6px}
+.select{padding:8px;border:1px solid #d1d5db;border-radius:6px}
+.btn{padding:8px 12px;border:1px solid #111827;background:#111827;color:#fff;border-radius:6px;cursor:pointer}
+.btn.secondary{background:#fff;color:#111827}
+.list{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
+.item{display:flex;justify-content:space-between;align-items:center;border:1px solid #e5e7eb;border-radius:8px;padding:8px 12px}
+.badge{font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid #d1d5db}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.hint{color:#6b7280;font-size:12px}
+.title{margin:0 0 8px 0}
