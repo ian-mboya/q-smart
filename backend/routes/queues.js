@@ -1,35 +1,29 @@
 const express = require('express');
 const Queue = require('../models/Queue');
 const Ticket = require('../models/Ticket');
+const ServiceType = require('../models/ServiceType');
 const { protect, restrictTo } = require('../middleware/auth');
+const mongoose = require('mongoose');
 
 const router = express.Router();
-
-// @desc    Get all active queues with statistics
-// @route   GET /api/queues
-// @access  Public (authenticated users)
-router.get('/', protect, async (req, res) => {
+// @desc    Get queues for teacher dashboard (only teacher's queues)
+// @route   GET /api/queues/teacher/my-queues
+// @access  Private (Teacher only)
+router.get('/teacher/my-queues', protect, restrictTo('teacher'), async (req, res) => {
   try {
-    const { serviceType, isActive } = req.query;
-    const filter = {};
-
-    // Filter by service type if provided
-    if (serviceType) {
-      filter.serviceType = serviceType;
-    }
-
-    // Filter by active status if provided, otherwise show only active
-    if (isActive !== undefined) {
-      filter.isActive = isActive === 'true';
-    } else {
-      filter.isActive = true;
-    }
+    const { isActive = 'true' } = req.query;
+    
+    const filter = {
+      admin: req.user.id,
+      isActive: isActive === 'true'
+    };
 
     const queues = await Queue.find(filter)
       .populate('admin', 'name email')
+      .populate('serviceType', 'name category icon')
       .sort({ createdAt: -1 });
 
-    // Get waiting counts for each queue
+    // Get statistics for each queue
     const queuesWithStats = await Promise.all(
       queues.map(async (queue) => {
         const waitingCount = await Ticket.countDocuments({
@@ -42,10 +36,21 @@ router.get('/', protect, async (req, res) => {
           status: { $in: ['waiting', 'called'] }
         });
 
+        const completedToday = await Ticket.countDocuments({
+          queue: queue._id,
+          status: 'completed',
+          completedAt: {
+            $gte: new Date().setHours(0, 0, 0, 0)
+          }
+        });
+
         return {
           ...queue.toObject(),
-          waitingTickets: waitingCount,
-          activeTickets: activeCount
+          stats: {
+            waiting: waitingCount,
+            active: activeCount,
+            completedToday: completedToday
+          }
         };
       })
     );
@@ -58,138 +63,63 @@ router.get('/', protect, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get queues error:', error);
+    console.error('Get teacher queues error:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to fetch queues'
+      message: 'Failed to fetch your queues'
     });
   }
 });
 
-// @desc    Get single queue with detailed statistics
-// @route   GET /api/queues/:id
-// @access  Public (authenticated users)
-router.get('/:id', protect, async (req, res) => {
+router.post('/', protect, restrictTo('admin', 'teacher'), async (req, res, next) => {
   try {
-    const queue = await Queue.findById(req.params.id)
-      .populate('admin', 'name email');
+    const { name, location, serviceType: serviceTypeInput, ...rest } = req.body;
 
-    if (!queue) {
-      return res.status(404).json({
-        status: 'error',
-        message: 'Queue not found'
-      });
+    // ensure authenticated user id is available
+    const creatorId = req.user && (req.user.id || req.user.userId);
+    if (!creatorId) return res.status(401).json({ message: 'Not authenticated' });
+
+    // Resolve serviceType input to ObjectId
+    let serviceTypeId = null;
+    if (!serviceTypeInput) {
+      return res.status(400).json({ message: 'serviceType is required' });
     }
 
-    // Get detailed statistics
-    const waitingTickets = await Ticket.countDocuments({
-      queue: queue._id,
-      status: 'waiting'
-    });
-
-    const calledTickets = await Ticket.countDocuments({
-      queue: queue._id,
-      status: 'called'
-    });
-
-    const completedToday = await Ticket.countDocuments({
-      queue: queue._id,
-      status: 'completed',
-      completedAt: {
-        $gte: new Date().setHours(0, 0, 0, 0)
+    if (mongoose.Types.ObjectId.isValid(serviceTypeInput)) {
+      // client passed an ObjectId
+      const st = await ServiceType.findById(serviceTypeInput).exec();
+      if (!st) return res.status(400).json({ message: 'ServiceType id not found' });
+      serviceTypeId = st._id;
+    } else {
+      // client passed a name: find (or create) ServiceType and use its _id
+      let st = await ServiceType.findOne({ name: new RegExp(`^${serviceTypeInput}$`, 'i') }).exec();
+      if (!st) {
+        st = await ServiceType.create({ name: serviceTypeInput, createdBy: creatorId });
       }
-    });
+      serviceTypeId = st._id;
+    }
 
-    const queueWithStats = {
-      ...queue.toObject(),
-      stats: {
-        waiting: waitingTickets,
-        called: calledTickets,
-        completedToday: completedToday,
-        totalActive: waitingTickets + calledTickets
-      }
+    const queueData = {
+      name,
+      location,
+      serviceType: serviceTypeId,
+      admin: creatorId,
+      ...rest
     };
 
-    res.json({
-      status: 'success',
-      data: {
-        queue: queueWithStats
-      }
-    });
-  } catch (error) {
-    console.error('Get queue error:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to fetch queue'
-    });
-  }
-});
-
-// @desc    Create a new queue
-// @route   POST /api/queues
-// @access  Private (Admin/Teacher only)
-router.post('/', protect, restrictTo('admin', 'teacher'), async (req, res) => {
-  try {
-    const { name, description, serviceType, location, averageWaitTime, settings } = req.body;
-
-    // Validation
-    if (!name || !serviceType || !location) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Name, service type, and location are required'
-      });
-    }
-
-    // Check if queue with same name already exists (case insensitive)
-    const existingQueue = await Queue.findOne({
-      name: { $regex: new RegExp(`^${name}$`, 'i') },
-      admin: req.user.id
-    });
-
-    if (existingQueue) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'You already have a queue with this name'
-      });
-    }
-
-    const queue = new Queue({
-      name,
-      description,
-      serviceType,
-      location,
-      averageWaitTime: averageWaitTime || 10,
-      admin: req.user.id,
-      settings: {
-        meetingDuration: settings?.meetingDuration || 10,
-        maxQueueLength: settings?.maxQueueLength || 50,
-        autoCallNext: settings?.autoCallNext !== undefined ? settings.autoCallNext : true
-      }
-    });
-
-    await queue.save();
+    const queue = await Queue.create(queueData);
+    
+    // Populate before sending response
     await queue.populate('admin', 'name email');
-
-    res.status(201).json({
-      status: 'success',
+    await queue.populate('serviceType');
+    
+    return res.status(201).json({ 
+      status: 'success', 
       message: 'Queue created successfully',
-      data: {
-        queue
-      }
+      data: { queue } 
     });
-  } catch (error) {
-    console.error('Create queue error:', error);
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Validation failed',
-        errors: error.errors
-      });
-    }
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to create queue'
-    });
+  } catch (err) {
+    next(err);
   }
 });
 
@@ -217,6 +147,21 @@ router.put('/:id', protect, restrictTo('admin', 'teacher'), async (req, res) => 
       });
     }
 
+    // Verify service type if provided
+    if (serviceType) {
+      const serviceTypeExists = await ServiceType.findOne({ 
+        _id: serviceType, 
+        isActive: true 
+      });
+      
+      if (!serviceTypeExists) {
+        return res.status(400).json({ 
+          status: 'error',
+          message: 'Invalid or inactive service type' 
+        });
+      }
+    }
+
     // Update fields if provided
     if (name) queue.name = name;
     if (description !== undefined) queue.description = description;
@@ -235,6 +180,7 @@ router.put('/:id', protect, restrictTo('admin', 'teacher'), async (req, res) => 
 
     await queue.save();
     await queue.populate('admin', 'name email');
+    await queue.populate('serviceType');
 
     res.json({
       status: 'success',
@@ -317,7 +263,7 @@ router.delete('/:id', protect, restrictTo('admin', 'teacher'), async (req, res) 
 // @access  Private (all authenticated users)
 router.post('/:id/join', protect, async (req, res) => {
   try {
-    const queue = await Queue.findById(req.params.id);
+    const queue = await Queue.findById(req.params.id).populate('serviceType');
 
     if (!queue || !queue.isActive) {
       return res.status(404).json({
@@ -400,6 +346,165 @@ router.post('/:id/join', protect, async (req, res) => {
     });
   }
 });
+// @desc    Get all active queues with statistics
+// @route   GET /api/queues
+// @access  Public (authenticated users)
+router.get('/', protect, async (req, res) => {
+  try {
+    const { serviceType, category, isActive } = req.query;
+    const filter = {};
+
+    // For teachers, only show their own queues by default
+    if (req.user.role === 'teacher') {
+      filter.admin = req.user.id;
+    }
+
+    // Filter by service type if provided
+    if (serviceType) {
+      filter.serviceType = serviceType;
+    }
+
+    // Filter by active status if provided, otherwise show only active
+    if (isActive !== undefined) {
+      filter.isActive = isActive === 'true';
+    } else {
+      filter.isActive = true;
+    }
+
+    let queues = await Queue.find(filter)
+      .populate('admin', 'name email')
+      .populate('serviceType')
+      .sort({ createdAt: -1 });
+
+    // Filter by service type category if provided
+    if (category) {
+      queues = queues.filter(queue => 
+        queue.serviceType && queue.serviceType.category === category
+      );
+    }
+     // Get waiting counts for each queue
+    const queuesWithStats = await Promise.all(
+      queues.map(async (queue) => {
+        const waitingCount = await Ticket.countDocuments({
+          queue: queue._id,
+          status: 'waiting'
+        });
+        
+        const activeCount = await Ticket.countDocuments({
+          queue: queue._id,
+          status: { $in: ['waiting', 'called'] }
+        });
+
+        return {
+          ...queue.toObject(),
+          waitingTickets: waitingCount,
+          activeTickets: activeCount
+        };
+      })
+    );
+
+    res.json({
+      status: 'success',
+      results: queuesWithStats.length,
+      data: {
+        queues: queuesWithStats
+      }
+    });
+  } catch (error) {
+    console.error('Get queues error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch queues'
+    });
+  }
+});
+
+// @desc    Get single queue with detailed statistics
+// @route   GET /api/queues/:id
+// @access  Public (authenticated users)
+router.get('/:id', protect, async (req, res) => {
+  try {
+    const queue = await Queue.findById(req.params.id)
+      .populate('admin', 'name email')
+      .populate('serviceType');
+
+    if (!queue) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'Queue not found'
+      });
+    }
+
+    // Get detailed statistics
+    const waitingTickets = await Ticket.countDocuments({
+      queue: queue._id,
+      status: 'waiting'
+    });
+
+    const calledTickets = await Ticket.countDocuments({
+      queue: queue._id,
+      status: 'called'
+    });
+
+    const completedToday = await Ticket.countDocuments({
+      queue: queue._id,
+      status: 'completed',
+      completedAt: {
+        $gte: new Date().setHours(0, 0, 0, 0)
+      }
+    });
+
+    const queueWithStats = {
+      ...queue.toObject(),
+      stats: {
+        waiting: waitingTickets,
+        called: calledTickets,
+        completedToday: completedToday,
+        totalActive: waitingTickets + calledTickets
+      }
+    };
+
+    res.json({
+      status: 'success',
+      data: {
+        queue: queueWithStats
+      }
+    });
+  } catch (error) {
+    console.error('Get queue error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch queue'
+    });
+  }
+});
+
+// @desc    Get active service types for dropdown
+// @route   GET /api/queues/service-types/options
+// @access  Private
+router.get('/service-types/options', protect, async (req, res) => {
+  try {
+    const serviceTypes = await ServiceType.find({ isActive: true })
+      .select('_id name description category icon defaultDuration')
+      .sort({ name: 1 });
+
+    res.json({
+      status: 'success',
+      data: {
+        serviceTypes
+      }
+    });
+  } catch (error) {
+    console.error('Get service types options error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch service types'
+    });
+  }
+});
+
+
+
 
 // @desc    Call next ticket in queue
 // @route   POST /api/queues/:id/call-next
@@ -447,6 +552,7 @@ router.post('/:id/call-next', protect, restrictTo('admin', 'teacher'), async (re
 
     // Populate for response
     await nextTicket.populate('queue', 'name location');
+    await nextTicket.populate('queue.serviceType');
 
     res.json({
       status: 'success',
@@ -469,7 +575,17 @@ router.post('/:id/call-next', protect, restrictTo('admin', 'teacher'), async (re
 // @access  Private (Admin/Teacher only - must own the queue)
 router.get('/:id/analytics', protect, restrictTo('admin', 'teacher'), async (req, res) => {
   try {
-    const queue = await Queue.findById(req.params.id);
+    const { id } = req.params;
+
+    // Validate id is a Mongo ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Invalid queue id: "${id}". Did you mean to call the teacher analytics endpoint (/api/analytics/teacher) or pass a queue ObjectId?`
+      });
+    }
+
+    const queue = await Queue.findById(id).populate('serviceType');
 
     if (!queue) {
       return res.status(404).json({
@@ -572,7 +688,8 @@ router.get('/:id/analytics', protect, restrictTo('admin', 'teacher'), async (req
       efficiency: completedToday > 0 ? Math.round((completedToday / (completedToday + await Ticket.countDocuments({
         queue: queue._id,
         status: 'waiting'
-      }))) * 100) : 0
+      }))) * 100) : 0,
+      serviceType: queue.serviceType
     };
 
     res.json({
@@ -590,4 +707,5 @@ router.get('/:id/analytics', protect, restrictTo('admin', 'teacher'), async (req
   }
 });
 
+// Export router so server can mount it
 module.exports = router;

@@ -43,6 +43,10 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  grade: {
+    type: String,
+    trim: true
+  },
   studentId: {
     type: String,
     sparse: true

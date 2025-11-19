@@ -35,10 +35,36 @@ app.get('/api/health', (req, res) => {
   res.json(healthInfo);
 });
 
+// Debug endpoint - list all parents and their children (dev only)
+app.get('/api/debug/parents', async (req, res) => {
+  if (process.env.NODE_ENV !== 'development') {
+    return res.status(403).json({ message: 'Debug endpoint only available in development' });
+  }
+  
+  try {
+    const parents = await require('./models/User').find({ role: 'parent' }, 'name email children');
+    res.json({
+      message: 'All parents and their children',
+      data: parents.map(p => ({
+        name: p.name,
+        email: p.email,
+        id: p._id,
+        childrenCount: p.children?.length || 0,
+        children: p.children || []
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/queues', require('./routes/queues'));
 app.use('/api/tickets', require('./routes/tickets'));
+app.use('/api/analytics', require('./routes/analytics')); // Analytics route
+app.use('/api/admin', require('./routes/admin')); // Admin route
+app.use('/api/parent', require('./routes/parent')); // Parent route
 
 // 404 handler (must be after all routes)
 app.use((req, res) => {

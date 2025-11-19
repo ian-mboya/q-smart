@@ -2,6 +2,7 @@ const express = require('express');
 const Ticket = require('../models/Ticket');
 const Queue = require('../models/Queue');
 const { protect, restrictTo } = require('../middleware/auth');
+const socketUtils = require('../utils/socketUtils'); // <-- added
 
 const router = express.Router();
 
@@ -13,11 +14,19 @@ router.use(protect);
 // @access  Private
 router.get('/my-tickets', async (req, res) => {
   try {
+    // Get all tickets for the user (active, completed, and cancelled)
+    // Include the 'in-progress' status as well
     const tickets = await Ticket.find({ 
       user: req.user.id,
-      status: { $in: ['waiting', 'called'] }
+      status: { $in: ['waiting', 'called', 'in-progress', 'completed', 'cancelled'] }
     })
-    .populate('queue', 'name serviceType location currentTicket averageWaitTime settings')
+    .populate({
+      path: 'queue',
+      populate: {
+        path: 'serviceType',
+        model: 'ServiceType'
+      }
+    })
     .sort({ createdAt: -1 });
 
     res.json({
@@ -54,7 +63,13 @@ router.get('/my-ticket', async (req, res) => {
       user: req.user.id,
       queue: queue,
       status: { $in: ['waiting', 'called', 'in-progress'] }
-    }).populate('queue', 'name serviceType location currentTicket averageWaitTime settings');
+    }).populate({
+      path: 'queue',
+      populate: {
+        path: 'serviceType',
+        model: 'ServiceType'
+      }
+    });
 
     if (!ticket) {
       return res.status(404).json({
@@ -210,7 +225,13 @@ router.patch('/:id/status', restrictTo('admin', 'teacher'), async (req, res) => 
     }
 
     await ticket.populate('user', 'name phone');
-    await ticket.populate('queue', 'name location');
+    await ticket.populate({
+      path: 'queue',
+      populate: {
+        path: 'serviceType',
+        model: 'ServiceType'
+      }
+    });
 
     res.json({
       status: 'success',
@@ -283,7 +304,13 @@ router.patch('/:id/cancel', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const ticket = await Ticket.findById(req.params.id)
-      .populate('queue', 'name serviceType location currentTicket averageWaitTime settings')
+      .populate({
+        path: 'queue',
+        populate: {
+          path: 'serviceType',
+          model: 'ServiceType'
+        }
+      })
       .populate('user', 'name email phone');
 
     if (!ticket) {
@@ -316,6 +343,183 @@ router.get('/:id', async (req, res) => {
       status: 'error',
       message: 'Failed to fetch ticket'
     });
+  }
+});
+
+// Example: ticket create handler (insert the emit after ticket creation)
+router.post('/', protect, async (req, res, next) => {
+  try {
+    // ...existing code that builds ticketData...
+    const ticket = await Ticket.create(ticketData);
+
+    // respond first
+    res.status(201).json({ status: 'success', data: { ticket } });
+
+    // emit socket events (fire-and-forget)
+    try {
+      await socketUtils.emitTicketEvent(ticket, 'ticket-created');
+    } catch (err) {
+      console.warn('Socket emit (ticket-created) failed', err);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Example: ticket update handler (insert emit after update)
+router.put('/:id', protect, async (req, res, next) => {
+  try {
+    // ...existing update logic...
+    const ticket = await Ticket.findByIdAndUpdate(req.params.id, req.body, { new: true }).populate('queue').exec();
+
+    if (!ticket) return res.status(404).json({ status: 'error', message: 'Ticket not found' });
+
+    res.json({ status: 'success', data: { ticket } });
+
+    try {
+      await socketUtils.emitTicketEvent(ticket, 'ticket-updated');
+    } catch (err) {
+      console.warn('Socket emit (ticket-updated) failed', err);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// @desc    Call a specific ticket (mark as called/in-progress)
+// @route   PUT /api/tickets/:id/call
+// @access  Private (admin, teacher)
+router.put('/:id/call', protect, restrictTo('admin','teacher'), async (req, res, next) => {
+  try {
+    const ticket = await Ticket.findByIdAndUpdate(
+      req.params.id, 
+      { 
+        status: 'called',
+        calledAt: new Date()
+      }, 
+      { new: true }
+    )
+    .populate('user', 'name email')
+    .populate('queue', 'name teacher')
+    .populate('queue.teacher', 'name email');
+
+    if (!ticket) {
+      return res.status(404).json({ 
+        status: 'error', 
+        message: 'Ticket not found' 
+      });
+    }
+
+    res.json({ 
+      status: 'success', 
+      message: 'Ticket called successfully',
+      data: { ticket } 
+    });
+
+    try {
+      await socketUtils.emitTicketEvent(ticket, 'ticket-called');
+    } catch (err) {
+      console.warn('Socket emit (ticket-called) failed', err);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// @desc    Complete a ticket (mark as completed)
+// @route   PUT /api/tickets/:id/complete
+// @access  Private (admin, teacher)
+router.put('/:id/complete', protect, restrictTo('admin','teacher'), async (req, res, next) => {
+  try {
+    const ticket = await Ticket.findByIdAndUpdate(
+      req.params.id, 
+      { 
+        status: 'completed', 
+        completedAt: new Date() 
+      }, 
+      { new: true }
+    )
+    .populate('user', 'name email')
+    .populate('queue', 'name teacher')
+    .populate('queue.teacher', 'name email');
+
+    if (!ticket) {
+      return res.status(404).json({ 
+        status: 'error', 
+        message: 'Ticket not found' 
+      });
+    }
+
+    res.json({ 
+      status: 'success', 
+      message: 'Ticket completed successfully',
+      data: { ticket } 
+    });
+
+    try {
+      await socketUtils.emitTicketEvent(ticket, 'ticket-completed');
+    } catch (err) {
+      console.warn('Socket emit (ticket-completed) failed', err);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Backward compatibility: also support POST for complete
+router.post('/:id/complete', protect, restrictTo('admin','teacher'), async (req, res, next) => {
+  try {
+    const ticket = await Ticket.findByIdAndUpdate(
+      req.params.id, 
+      { 
+        status: 'completed', 
+        completedAt: new Date() 
+      }, 
+      { new: true }
+    )
+    .populate('user', 'name email')
+    .populate('queue', 'name teacher')
+    .populate('queue.teacher', 'name email');
+
+    if (!ticket) {
+      return res.status(404).json({ 
+        status: 'error', 
+        message: 'Ticket not found' 
+      });
+    }
+
+    res.json({ 
+      status: 'success', 
+      message: 'Ticket completed successfully',
+      data: { ticket } 
+    });
+
+    try {
+      await socketUtils.emitTicketEvent(ticket, 'ticket-completed');
+    } catch (err) {
+      console.warn('Socket emit (ticket-completed) failed', err);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Example: ticket delete/cancel handler -> emit 'ticket-removed'
+router.delete('/:id', protect, async (req, res, next) => {
+  try {
+    const ticket = await Ticket.findByIdAndDelete(req.params.id).populate('queue').exec();
+
+    if (!ticket) return res.status(404).json({ status: 'error', message: 'Ticket not found' });
+
+    res.json({ status: 'success', message: 'Ticket deleted', data: { ticket } });
+
+    try {
+      await socketUtils.emitTicketEvent(ticket, 'ticket-removed');
+    } catch (err) {
+      console.warn('Socket emit (ticket-removed) failed', err);
+    }
+  } catch (err) {
+    next(err);
   }
 });
 

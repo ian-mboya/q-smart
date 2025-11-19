@@ -11,8 +11,8 @@ const queueSchema = new mongoose.Schema({
     trim: true
   },
   serviceType: { 
-    type: String, 
-    enum: ['admissions', 'counselling', 'library', 'fee-payment', 'parent-teacher', 'administration'],
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ServiceType',
     required: true 
   },
   location: {
@@ -26,8 +26,7 @@ const queueSchema = new mongoose.Schema({
   },
   averageWaitTime: { 
     type: Number, 
-    default: 10, // in minutes
-    min: 1
+    default: 0
   },
   isActive: { 
     type: Boolean, 
