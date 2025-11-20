@@ -1,36 +1,32 @@
-import React from "react";
-import PrimaryCTAButton from "../../components/Buttons/primary-cta-button";
-import isometricIllust from "../../assets/3d-isometric.png";
-import phoneMockup from "../../assets/phone-mockup.png";
-
-import "./Hero.css";
+import React from 'react'
+import PrimaryCTAButton from '../../components/Buttons/primary-cta-button'
+import './Hero.css'
 
 function Hero() {
   return (
-    <>
-      <section className="hero-section">
-        <div className="hero-content">
-          <div className="hero-left">
-            <h1>Queues Made Smarter</h1>
+    <section className="hero">
+      <div className="hero-container">
+        <div className="hero-top">
+          <div className="hero-title-section">
+            <h1 className="hero-title">
+              <span>Queues Made</span>
+              <span className="highlight">Smarter</span>
+            </h1>
           </div>
-          <div className="hero-right">
-            <p className="hero-text">
-              Quickly understand your queues. Better decisions start here.
-            </p>
-            <PrimaryCTAButton label="Begin" navigateTo="/dashboard"/>
-          </div>
-        </div>
-        <div className="hero-cards">
-          <div className="card card-green">
-            <img src={isometricIllust} alt="..." />
-          </div>
-          <div className="card card-purple">
-            <img src={phoneMockup} alt="..." />
+          
+          <div className="hero-cta-section">
+            <p className="hero-subtitle">Quickly understand your queues. Better decisions start here.</p>
+            <PrimaryCTAButton label="Get Started" navigateTo="/signup" />
           </div>
         </div>
-      </section>
-    </>
-  );
+        
+        <div className="hero-images">
+          <div className="hero-image hero-image-1"></div>
+          <div className="hero-image hero-image-2"></div>
+        </div>
+      </div>
+    </section>
+  )
 }
 
-export default Hero;
+export default Hero
